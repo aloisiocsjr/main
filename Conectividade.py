@@ -6,56 +6,52 @@ from pathlib import Path
 import plotly.express as px
 import time
 
-# =======================================
+# ============================================================
 # CONFIGURAÇÃO DO APP
-# =======================================
+# ============================================================
+
 st.set_page_config(page_title="Conectividade – UNICEF & SIMET", layout="wide")
 
 st.title("📡 Dashboard de Conectividade – SIMET / UNICEF")
 
 st.markdown("""
-Sistema automático para:
-- Carregamento direto da API SIMET/NIC.br
-- Processamento das escolas municipais
-- Identificação de medidores instalados (status ATIVO)
-- Cálculo dos municípios com 50%, 70%, 80% e 100% das escolas conectadas
-- Download das bases em CSV
-- Base final consolidada
+Sistema otimizado para:
+- Usar cache local da API (carregamento instantâneo)
+- Atualizar os dados quando o usuário solicitar
+- Processar escolas municipais
+- Calcular municípios com 50%, 70%, 80% e 100%
+- Gerar tabelas, gráficos e downloads
 """)
 
-# =======================================
-# CONFIGS DE ARQUIVOS
-# =======================================
-CAMINHO_ADESOES = Path("bases/adesoes_2025_2028.xlsx")
+# ============================================================
+# ARQUIVOS LOCAIS
+# ============================================================
+
+CAMINHO_CACHE = Path("bases/api_cache.csv")
+CAMINHO_ADESOES = Path("bases/adesoes.csv")
 URL_API = "https://api.simet.nic.br/school-measures/v1/getStatusandSchoolInfoUNICEF"
 
-ARQ70 = "bases/municipios_com_70_medidores_instalados.csv"
-ARQ100 = "bases/municipios_com_100_medidores_instalados.csv"
 
-# =======================================
+# ============================================================
 # FUNÇÕES AUXILIARES
-# =======================================
+# ============================================================
 
-def normalizar_texto(valor):
-    """Remove acentos, espaços extras e converte para maiúsculas."""
-    if pd.isna(valor):
+def normalizar(v):
+    if pd.isna(v):
         return ""
-    valor = str(valor)
-    valor = unicodedata.normalize("NFKD", valor).encode("ascii", "ignore").decode("utf-8")
-    return valor.strip().upper()
+    v = str(v)
+    v = unicodedata.normalize("NFKD", v).encode("ascii", "ignore").decode("utf-8")
+    return v.strip().upper()
 
 
-# FUNÇÃO ROBUSTA – API COM RE-TENTATIVA
-def carregar_dados_api():
-    tentativas = 3
-    for tentativa in range(1, tentativas + 1):
-        try:
-            st.write(f"🔄 Tentativa {tentativa} de {tentativas} para acessar a API...")
-            r = requests.get(URL_API, timeout=180)
+def atualizar_api():
+    """Baixa a API e salva em api_cache.csv."""
+    try:
+        with st.spinner("🔄 Atualizando dados diretamente da API SIMET..."):
+            r = requests.get(URL_API, timeout=300)
             r.raise_for_status()
             data = r.json()
 
-            # Encontrar lista dentro do JSON
             lista = None
             if isinstance(data, dict):
                 for v in data.values():
@@ -65,174 +61,192 @@ def carregar_dados_api():
             else:
                 lista = data
 
-            return pd.DataFrame(lista)
+            df = pd.DataFrame(lista)
+            df.to_csv(CAMINHO_CACHE, index=False, encoding="utf-8")
 
-        except Exception as e:
-            if tentativa < tentativas:
-                st.warning("⚠️ Falha ao acessar API. Tentando novamente em 5 segundos...")
-                time.sleep(5)
-            else:
-                st.error(f"❌ Erro ao acessar API após {tentativas} tentativas: {e}")
-                return None
+        st.success("✔ Dados atualizados com sucesso!")
+        return df
+
+    except Exception as e:
+        st.error(f"❌ Erro ao atualizar API: {e}")
+        return None
 
 
-@st.cache_data(show_spinner=True)
+@st.cache_data(show_spinner=False)
+def carregar_cache():
+    return pd.read_csv(CAMINHO_CACHE)
+
+
+@st.cache_data(show_spinner=False)
 def carregar_lista_unica():
-    return pd.read_excel(CAMINHO_ADESOES, sheet_name="Lista única")
+
+    # Detecta separador automaticamente
+    df = pd.read_csv(CAMINHO_ADESOES, dtype=str, sep=None, engine="python")
+
+    # Remove BOM invisível e espaços
+    df.columns = df.columns.str.replace("\ufeff", "", regex=False)
+    df.columns = df.columns.str.strip()
+
+    # Conferir se coluna existe
+    if "co_municipio" not in df.columns:
+        st.error(f"Colunas encontradas no CSV: {df.columns.tolist()}")
+        st.stop()
+
+    df["co_municipio"] = pd.to_numeric(df["co_municipio"], errors="coerce")
+    return df
 
 
-# =======================================
-# CARREGAMENTO AUTOMÁTICO
-# =======================================
-st.info("🔄 Carregando dados automaticamente...")
+# ============================================================
+# BOTÃO DE ATUALIZAÇÃO DA API
+# ============================================================
 
-df_api = carregar_dados_api()
-df_lista = carregar_lista_unica()
+st.subheader("🔧 Atualização de Dados")
 
-if df_api is None or df_lista is None:
+if st.button("🔃 Atualizar Dados da API (SIMET)"):
+    df_api = atualizar_api()
+    if df_api is not None:
+        st.session_state["api_atualizada"] = True
+
+
+# ============================================================
+# CARREGAMENTO DO CACHE
+# ============================================================
+
+if not CAMINHO_CACHE.exists():
+    st.warning("⚠ O arquivo api_cache.csv ainda não existe. Clique no botão acima para gerar os dados.")
     st.stop()
 
-# =======================================
-# NORMALIZAÇÃO
-# =======================================
+df_api = carregar_cache()
+df_lista = carregar_lista_unica()
+
+
+# ============================================================
+# PROCESSAMENTO DOS DADOS
+# ============================================================
+
 df_api["co_municipio"] = pd.to_numeric(df_api["co_municipio"], errors="coerce")
-df_lista["co_municipio"] = pd.to_numeric(df_lista["co_municipio"], errors="coerce")
 
-df_api["tp_dependencia_norm"] = df_api["tp_dependencia"].apply(normalizar_texto).replace({
-    "MUNICIPIO": "MUNICIPAL",
-    "REDE MUNICIPAL": "MUNICIPAL"
-})
+# Normalização vetorizada
+df_api["tp_dependencia_norm"] = df_api["tp_dependencia"].astype(str).str.upper()
+df_api["in_internet_norm"] = df_api["in_internet"].astype(str).str.upper()
+df_api["status_norm"] = df_api["status"].astype(str).str.upper()
 
-df_api["in_internet_norm"] = df_api["in_internet"].apply(normalizar_texto).replace({
-    "YES": "SIM",
-    "Y": "SIM",
-    "TRUE": "SIM"
-})
-
-df_api["status_norm"] = df_api["status"].apply(normalizar_texto).replace({
+df_api["status_norm"] = df_api["status_norm"].replace({
     "INSTALADO": "ATIVO",
     "INSTALLED": "ATIVO",
     "ACTIVE": "ATIVO",
     "TRUE": "ATIVO"
 })
 
-# =======================================
-# FILTRAR SOMENTE MUNICIPAIS COM INTERNET
-# =======================================
+df_api["in_internet_norm"] = df_api["in_internet_norm"].replace({
+    "YES": "SIM",
+    "Y": "SIM",
+    "TRUE": "SIM"
+})
+
+# Filtrar municipais com internet
 df_filtrado = df_api[
-    (df_api["tp_dependencia_norm"] == "MUNICIPAL") &
+    (df_api["tp_dependencia_norm"].str.contains("MUNICIPAL")) &
     (df_api["in_internet_norm"] == "SIM")
 ].copy()
 
+# Criar ID único da escola
 df_filtrado["id_escola_unica"] = (
-    df_filtrado["co_municipio"].astype(str) + "_" + df_filtrado["co_entidade"].astype(str)
+    df_filtrado["co_municipio"].astype(str) + "_" +
+    df_filtrado["co_entidade"].astype(str)
 )
 
 df_unicas = df_filtrado.drop_duplicates(subset="id_escola_unica")
 
-# =======================================
-# MERGE COM LISTA ÚNICA
-# =======================================
+# Merge com Lista Única
 df_lista_red = df_lista[["UF", "Município", "co_municipio", "Regiao"]].drop_duplicates()
 df_final = df_unicas.merge(df_lista_red, on="co_municipio", how="inner")
 
-# =======================================
-# CÁLCULO DAS METAS
-# =======================================
+# Cálculo das metas
 temp = df_final.groupby(["UF", "Município", "co_municipio"]).agg(
     total_escolas=("id_escola_unica", "nunique"),
     escolas_ativas=("status_norm", lambda s: (s == "ATIVO").sum())
 ).reset_index()
 
-temp["percentual"] = ((temp["escolas_ativas"] / temp["total_escolas"]) * 100).round(2)
+temp["percentual"] = (temp["escolas_ativas"] / temp["total_escolas"] * 100).round(2)
 
 mun_50 = temp[temp["percentual"] >= 50]
 mun_70 = temp[temp["percentual"] >= 70]
 mun_80 = temp[temp["percentual"] >= 80]
 mun_100 = temp[temp["percentual"] == 100]
 
-# =======================================
-# CARDS
-# =======================================
-st.subheader("📊 Indicadores Gerais")
 
-# Agora serão 6 cards
-c0, c1, c2, c3, c4, c5 = st.columns(6)
+# ============================================================
+# CARDS (COM SEPARADOR DE MILHAR)
+# ============================================================
 
-# Valores numéricos
-total_escolas = df_api["co_entidade"].nunique()
-total_escolas_internet = df_unicas["id_escola_unica"].nunique()
-total_escolas_medidor = df_final[df_final["status_norm"] == "ATIVO"]["id_escola_unica"].nunique()
-total_escolas_sem_medidor = df_final[df_final["status_norm"] != "ATIVO"]["id_escola_unica"].nunique()
-qtd_70 = len(mun_70)
-qtd_100 = len(mun_100)
-
-# Formatação com separador de milhar
 fmt = lambda x: f"{x:,.0f}".replace(",", ".")
 
-# Exibir os cards com números formatados
-c0.metric("Total de Escolas", fmt(total_escolas))
-c1.metric("Escolas Municipais c/ Internet", fmt(total_escolas_internet))
-c2.metric("Escolas c/ Medidor Instalado", fmt(total_escolas_medidor))
-c3.metric("Escolas c/ Internet e SEM Medidor", fmt(total_escolas_sem_medidor))
-c4.metric("Municípios ≥ 70%", fmt(qtd_70))
-c5.metric("Municípios 100%", fmt(qtd_100))
+st.subheader("📊 Indicadores Gerais")
+c0, c1, c2, c3, c4, c5 = st.columns(6)
 
-# =======================================
-# EXPORTAÇÃO CSV
-# =======================================
-Path("bases").mkdir(exist_ok=True)
-mun_70.to_csv(ARQ70, index=False, encoding="utf-8")
-mun_100.to_csv(ARQ100, index=False, encoding="utf-8")
+total_escolas = df_api["co_entidade"].nunique()
+total_internet = df_unicas["id_escola_unica"].nunique()
+total_medidor = df_final[df_final["status_norm"] == "ATIVO"]["id_escola_unica"].nunique()
+total_sem = df_final[df_final["status_norm"] != "ATIVO"]["id_escola_unica"].nunique()
 
-st.subheader("📁 Download das Bases")
+c0.metric("Total de Escolas (Geral)", fmt(total_escolas))
+c1.metric("Escolas c/ Internet", fmt(total_internet))
+c2.metric("Escolas c/ Medidor Instalado", fmt(total_medidor))
+c3.metric("Escolas Sem Medidor", fmt(total_sem))
+c4.metric("Municípios ≥ 70%", fmt(len(mun_70)))
+c5.metric("Municípios 100%", fmt(len(mun_100)))
+
+
+# ============================================================
+# DOWNLOADS
+# ============================================================
+
+st.subheader("📁 Downloads")
 
 st.download_button(
-    "📥 Download Municípios ≥ 70%",
+    "📥 Municípios ≥ 70%",
     mun_70.to_csv(index=False).encode("utf-8"),
-    "municipios_com_70_medidores_instalados.csv",
+    "municipios_70.csv",
     mime="text/csv"
 )
 
 st.download_button(
-    "📥 Download Municípios 100%",
+    "📥 Municípios 100%",
     mun_100.to_csv(index=False).encode("utf-8"),
-    "municipios_com_100_medidores_instalados.csv",
+    "municipios_100.csv",
     mime="text/csv"
 )
 
-# =======================================
-# GRÁFICO – MUNICÍPIOS 100% POR UF
-# =======================================
+st.download_button(
+    "📥 Base Final Completa",
+    df_final.to_csv(index=False).encode("utf-8"),
+    "base_final.csv",
+    mime="text/csv"
+)
+
+
+# ============================================================
+# GRÁFICO
+# ============================================================
+
 st.subheader("📊 Municípios 100% Conectados por UF")
 
-if not mun_100.empty:
-    graf = mun_100.groupby("UF")["Município"].nunique().reset_index(name="qtd")
-    graf = graf.sort_values("qtd", ascending=False)
+if len(mun_100):
+    g = mun_100.groupby("UF")["Município"].nunique().reset_index(name="qtd")
+    g = g.sort_values("qtd", ascending=False)
 
-    fig = px.bar(
-        graf,
-        x="UF",
-        y="qtd",
-        text="qtd",
-        title="Municípios 100% Conectados por UF"
-    )
+    fig = px.bar(g, x="UF", y="qtd", text="qtd",
+                 title="Municípios 100% Conectados por UF")
     fig.update_traces(textposition="outside")
+
     st.plotly_chart(fig, use_container_width=True)
 else:
-    st.info("Nenhum município 100% conectado identificado.")
+    st.info("Nenhum município 100% identificado.")
 
-# =======================================
-# BASE FINAL CONSOLIDADA
-# =======================================
-st.subheader("📚 Base Final Consolidada")
-st.dataframe(df_final)
 
-st.download_button(
-    "📥 Baixar Base Final Consolidada",
-    df_final.to_csv(index=False).encode("utf-8"),
-    "base_final_consolidada.csv",
-    mime="text/csv"
-)
+# ============================================================
+# FINAL
+# ============================================================
 
-st.success("✅ Dashboard carregado e bases geradas com sucesso!")
+st.success("✅ Dashboard carregado com sucesso! Clique em 'Atualizar Dados' para atualizar quando quiser.")
