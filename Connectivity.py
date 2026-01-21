@@ -205,6 +205,15 @@ c5.metric("Municípios 100%", fmt(len(mun_100)))
 st.subheader("📁 Downloads")
 
 st.download_button(
+    "📥 Escolas com Internet e Medidor Instalado",
+    df_final[df_final["status_norm"] == "ATIVO"]
+        .to_csv(index=False)
+        .encode("utf-8"),
+    "escolas_com_internet_e_medidor.csv",
+    mime="text/csv"
+)
+
+st.download_button(
     "📥 Municípios ≥ 70%",
     mun_70.to_csv(index=False).encode("utf-8"),
     "municipios_70.csv",
