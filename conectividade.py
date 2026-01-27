@@ -46,12 +46,14 @@ COL_MUNICIPIO_NOME = "Município"
 # ============================================================
 
 def fmt(n):
+    """Formata inteiro com separador de milhar pt-BR."""
     return f"{int(n):,}".replace(",", ".")
 
 
 def baixar_api_com_retry():
     tentativas = 3
     timeout = 300
+
     for _ in range(tentativas):
         try:
             response = requests.get(API_URL, timeout=timeout)
@@ -59,6 +61,7 @@ def baixar_api_com_retry():
             return pd.DataFrame(response.json())
         except requests.exceptions.ReadTimeout:
             time.sleep(5)
+
     raise RuntimeError("Não foi possível acessar a API SIMET.")
 
 
@@ -76,6 +79,15 @@ def carregar_api():
 
 @st.cache_data(show_spinner=False)
 def carregar_adesoes():
+    if not ARQ_ADESOES.exists():
+        st.error(
+            "❌ Arquivo de adesões não encontrado.\n\n"
+            "O arquivo **adesoes_2025_2028.xlsx** precisa estar no GitHub em:\n\n"
+            "`bases/adesoes_2025_2028.xlsx`\n\n"
+            "👉 Faça upload do arquivo e o app funcionará automaticamente."
+        )
+        st.stop()
+
     return pd.read_excel(
         ARQ_ADESOES,
         sheet_name=ABA_ADESOES,
@@ -274,5 +286,5 @@ tabela_faixa(df_mun, 1.0, "📋 Municípios com 100% das escolas conectadas e co
 tabela_faixa(df_mun, 0.7, "📋 Municípios com ≥ 70% das escolas conectadas e com medidor")
 tabela_faixa(df_mun, 0.5, "📋 Municípios com ≥ 50% das escolas conectadas e com medidor")
 
-st.success("Dashboard carregado com sucesso 🚀")
+st.success("Aplicação carregada com sucesso 🚀")
 st.caption("Projeto Conectividade • SIMET / UNICEF")
